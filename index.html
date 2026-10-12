@@ -187,6 +187,14 @@ td.r,th.r{text-align:right;font-variant-numeric:tabular-nums}
 .kv input{min-height:34px;padding:4px 8px;font-size:15px;font-weight:600}
 .kv .cap{display:block;font-size:11.5px;color:var(--ink-3);margin-top:2px}
 .field[hidden]{display:none}
+.sub-chart{margin-top:4px}
+.sub-chart .card-head h2{font-size:15px}
+.pc-ctl{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 4px}
+.pc-ctl .seg.scroll{max-width:100%;overflow-x:auto}
+.pc-ctl .seg button{padding:8px 10px;white-space:nowrap}
+.pc-sum{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;margin:4px 0 2px;font-size:14px;font-weight:600}
+.pc-sum .pc-px{font:700 22px/1.2 var(--f-head)}
+.pc-per{color:var(--ink-3);font-weight:500;font-size:12.5px}
 .hits{display:flex;flex-direction:column;gap:6px;max-height:46vh;overflow:auto}
 .res-item{display:flex;flex-direction:column;align-items:flex-start;gap:2px;width:100%;min-height:48px;padding:9px 12px;border:1px solid var(--base);border-radius:8px;background:var(--surface);color:var(--ink);text-align:left;cursor:pointer;font:inherit}
 .res-item b{font-weight:600;font-size:14.5px}.res-item span{font-size:12.5px;color:var(--ink-2)}
@@ -667,7 +675,7 @@ function toast(msg){const t=$('#toast');t.textContent=msg;t.hidden=false;clearTi
 const KEY='libro-de-cuentas-v1';
 let S=null, MODE='local', DBREF=null, DL=null, lastJson='', dirty=false, saving=false, saveTimer=null, storageOK=true;
 const V={tab:'resumen',month:ymOf(todayISO()),q:'',ft:'todos'};
-const openPos=new Set();
+const openPos=new Set(), openChart=new Set(), CHV={};
 
 function setStatus(kind){
   const m={ok:MODE==='db'?'Guardado en tu espacio privado':'Guardado en este navegador',
@@ -1021,11 +1029,14 @@ function lineChart(host,initial){
   const ctl=mount(host,(w,cfg)=>{
     const {xs,series,aria}=cfg, H=240, m={t:12,r:14,b:28,l:46}, iw=w-m.l-m.r, ih=H-m.t-m.b;
     const x0=xs[0], x1=xs[xs.length-1], span=(x1-x0)||1, X=x=>m.l+(x-x0)/span*iw;
-    const mx=Math.max(1,...series.flatMap(s=>s.values.filter(v=>v!=null))), sc=niceScale(mx), top=sc.top, Y=v=>m.t+ih-(v/top)*ih;
+    const vals=series.flatMap(s=>s.values.filter(v=>v!=null)), mx=Math.max(cfg.fit?-Infinity:1,...vals);
+    let bot=0, sc=niceScale(mx);
+    if(cfg.fit&&vals.length){const lo=Math.min(...vals); sc=niceScale(Math.max(mx-lo,mx*.02||.01)*1.1); bot=Math.max(0,Math.floor(lo/sc.step)*sc.step); if(bot+sc.top<mx) sc=niceScale(mx-bot);}
+    const top=sc.top, Y=v=>m.t+ih-((v-bot)/top)*ih, fmt=cfg.fmt||money, axf=cfg.axFmt||(v=>CMP.format(v));
     const svg=sv('svg',{width:w,height:H,viewBox:'0 0 '+w+' '+H,role:'img','aria-label':aria,tabindex:0});
-    for(let i=0;i<=4;i++){const v=sc.step*i;
+    for(let i=0;i<=4;i++){const v=bot+sc.step*i;
       svg.append(sv('line',{x1:m.l,x2:w-m.r,y1:Y(v),y2:Y(v),class:i?'grid':'base'}),
-        sv('text',{x:m.l-8,y:Y(v)+4,class:'ax','text-anchor':'end'},i?CMP.format(v):'0'));}
+        sv('text',{x:m.l-8,y:Y(v)+4,class:'ax','text-anchor':'end'},(i||bot>0)?axf(v):'0'));}
     const nt=Math.max(2,Math.min(cfg.maxTicks||6,Math.floor(iw/84)));
     cfg.xTicks(nt).forEach(tk=>{const x=X(tk.x), a=x-m.l<18?'start':(w-m.r-x<18?'end':'middle');
       svg.append(sv('text',{x,y:H-8,class:'ax','text-anchor':a},tk.label));});
@@ -1033,7 +1044,7 @@ function lineChart(host,initial){
       const pts=[]; s.values.forEach((v,i)=>{if(v!=null) pts.push([X(xs[i]),Y(v)]);});
       if(!pts.length) return;
       const d=pts.map((p,i)=>(i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join('');
-      if(s.area) svg.append(sv('path',{d:d+'L'+pts[pts.length-1][0].toFixed(1)+','+Y(0)+'L'+pts[0][0].toFixed(1)+','+Y(0)+'Z',fill:s.color,'fill-opacity':.1}));
+      if(s.area) svg.append(sv('path',{d:d+'L'+pts[pts.length-1][0].toFixed(1)+','+Y(bot)+'L'+pts[0][0].toFixed(1)+','+Y(bot)+'Z',fill:s.color,'fill-opacity':.1}));
       svg.append(sv('path',{d,fill:'none',stroke:s.color,'stroke-width':2,'stroke-linejoin':'round','stroke-linecap':'round'}));
       const e=pts[pts.length-1]; svg.append(sv('circle',{cx:e[0],cy:e[1],r:4,fill:s.color,stroke:'var(--surface)','stroke-width':2}));
     });
@@ -1043,7 +1054,7 @@ function lineChart(host,initial){
       const x=X(xs[i]); vline.setAttribute('x1',x); vline.setAttribute('x2',x); cross.style.display='';
       series.forEach((s,j)=>{const v=s.values[i]; if(v==null) dots[j].style.display='none'; else {dots[j].style.display='';dots[j].setAttribute('cx',x);dots[j].setAttribute('cy',Y(v));}});
       const r=svg.getBoundingClientRect();
-      showTip(cx!=null?cx:r.left+x,cy!=null?cy:r.top+m.t+30,cfg.tipTitle(i),series.filter(s=>s.values[i]!=null).map(s=>({color:s.color,k:s.name,v:money(s.values[i])})));
+      showTip(cx!=null?cx:r.left+x,cy!=null?cy:r.top+m.t+30,cfg.tipTitle(i),series.filter(s=>s.values[i]!=null).map(s=>({color:s.color,k:s.name,v:fmt(s.values[i])})));
     };
     const near=px=>{const t=x0+(px-m.l)/iw*span; let b=0,bd=Infinity; xs.forEach((x,i)=>{const dd=Math.abs(x-t); if(dd<bd){bd=dd;b=i;}}); return b;};
     let cur=xs.length-1;
@@ -1417,6 +1428,63 @@ function viewPresu(){
   upd(); return root;
 }
 
+
+/* Gráfica individual de cada inversión: valor frente a lo invertido, o precio frente a tu coste medio. */
+function dateTicks(xs){
+  const span=(xs[xs.length-1]-xs[0])/864e5;
+  return n=>{const a=[];for(let i=0;i<n;i++){const x=xs[0]+(xs[xs.length-1]-xs[0])*i/(n-1),d=new Date(x);
+    a.push({x,label:span<200?d.getDate()+' '+MESES_C[d.getMonth()]:MESES_C[d.getMonth()]+' '+String(d.getFullYear()).slice(2)});}return a;};
+}
+const RANGOS=[{v:'1m',t:'1 m',d:31},{v:'3m',t:'3 m',d:92},{v:'6m',t:'6 m',d:183},{v:'ytd',t:'Año'},{v:'1a',t:'1 a',d:366},{v:'5a',t:'5 a',d:1827},{v:'max',t:'Máx',d:0}];
+function posSeries(p,vista,rango){
+  const today=todayISO(), hp=p.hp||[], first=p.ops.map(o=>o.fecha).sort()[0]||'', val=vista==='valor';
+  const r=RANGOS.find(x=>x.v===rango)||RANGOS[6];
+  let from=val&&first?first:(hp[0]?hp[0][0]:today);
+  const lim=r.v==='ytd'?today.slice(0,4)+'-01-01':(r.d?addDaysISO(today,-r.d):'');
+  if(lim&&from<lim) from=lim;
+  const ds=new Set([today]); hp.forEach(x=>{if(x[0]>=from) ds.add(x[0]);}); p.ops.forEach(o=>{if(o.fecha>=from) ds.add(o.fecha);});
+  if(!val&&lim){const prev=hp.filter(x=>x[0]<from).pop(); if(prev) ds.add(prev[0]);}  /* cierre anterior: la base del cambio del periodo */
+  return Array.from(ds).filter(d=>d<=today).sort().map(d=>{
+    const q=calcPos({ops:p.ops,precio:0},d), pr=d===today?(p.precio>0?p.precio:null):priceAt(hp,d), tiene=q.u>1e-9;
+    return {f:d,pr,pm:tiene?q.pmedio:null,c:r2(q.coste),v:tiene?(pr!=null?r2(q.u*pr):null):0};
+  }).filter(x=>val?(!first||x.f>=first):x.pr!=null);
+}
+function posChart(p){
+  const hp=p.hp||[], hasOps=p.ops.some(o=>o.tipo!=='dividendo');
+  const st=CHV[p.id]||(CHV[p.id]={vista:'precio',rango:hp.length&&parseISO(hp[hp.length-1][0])-parseISO(hp[0][0])>366*864e5?'1a':'max'});
+  const wrap=h('div',{class:'pchart'});
+  if(hp.length<2){wrap.append(h('p',{class:'hint'},p.fuente?'Todavía no hay histórico de precios. Pulsa «Traer histórico» para ver la gráfica.':'Para ver la gráfica, importa el histórico de precios con «Importar histórico».'));return wrap;}
+  const sum=h('div',{class:'pc-sum'}), ctl=h('div',{class:'pc-ctl'}), body=h('div');
+  const segm=(opts,key,cls)=>h('div',{class:'seg '+(cls||''),role:'radiogroup'},opts.map(o=>{const b=h('button',{type:'button',role:'radio','aria-checked':String(st[key]===o.v)},o.t);
+    b.addEventListener('click',()=>{st[key]=o.v;draw();});return b;}));
+  const draw=()=>{
+    const rows=posSeries(p,st.vista,st.rango), val=st.vista==='valor';
+    sum.replaceChildren();
+    if(rows.length<2) body.replaceChildren(h('p',{class:'hint'},'Hay muy pocos datos en este periodo. Prueba con uno más largo.'));
+    else{
+      const xs=rows.map(r=>parseISO(r.f).getTime()), pf=v=>(v>=100?F2:PRICE).format(v)+NB+'€';
+      let series, color='var(--s1)';
+      if(val) series=[{name:'Valor de la inversión',color:'var(--s1)',values:rows.map(r=>r.v),area:true},{name:'Invertido',color:'var(--ctx)',values:rows.map(r=>r.c)}];
+      else{
+        const a=rows[0].pr, z=rows[rows.length-1].pr, d=z-a, pc=a>0?d/a:0; color=d>=0?'var(--pos)':'var(--neg)';
+        series=[{name:'Precio',color,values:rows.map(r=>r.pr),area:true}];
+        sum.append(h('b',{class:'pc-px'},pf(z)),h('span',{class:tone(d)},arrow(d)+(d>=0?'+':'−')+(Math.abs(d)>=1?F2:PRICE).format(Math.abs(d))+NB+'€ ('+spc(pc)+')'),
+          h('span',{class:'pc-per'},'desde el '+shortDate(rows[0].f)));
+      }
+      const card=chartCard({title:val?'Valor frente a lo invertido':'Evolución del precio',
+        sub:val?'Cuánto vale lo que tienes cada día y cuánto has puesto.':null,
+        legend:val?series.map(s=>({name:s.name,color:s.color})):null,
+        mount:host=>lineChart(host,{xs,aria:(val?'Valor de ':'Precio de ')+p.nombre,maxTicks:6,fit:!val,fmt:val?money:pf,axFmt:val?undefined:(v=>(v>=100?F0:PRICE).format(v)),
+          series,tipTitle:i=>shortDate(rows[i].f),xTicks:dateTicks(xs)}),
+        table:()=>val?{headers:['Fecha','Valor','Invertido','Diferencia'],align:['l','r','r','r'],rows:rows.slice().reverse().map(r=>[shortDate(r.f),r.v==null?'—':money(r.v),money(r.c),r.v==null?'—':smoney(r.v-r.c)])}
+          :{headers:['Fecha','Precio'],align:['l','r'],rows:rows.slice().reverse().map(r=>[shortDate(r.f),pf(r.pr)])}});
+      card.className='sub-chart'; body.replaceChildren(card);
+    }
+    ctl.replaceChildren(segm(RANGOS.map(r=>({v:r.v,t:r.t})),'rango','scroll'),...(hasOps?[segm([{v:'precio',t:'Precio'},{v:'valor',t:'Mi inversión'}],'vista')]:[]));
+  };
+  wrap.append(sum,body,ctl); draw(); return wrap;
+}
+
 function posCard(p,c){
   const tp=tipoInv(p.tipo), kv=(k,v,cls)=>h('div',{class:'kv'},h('span',{class:'k'},k),h('span',{class:'v '+(cls||'')},v));
   const inp=h('input',{type:'text',inputmode:'decimal',value:PRICE.format(p.precio||0),'aria-label':'Precio actual de '+p.nombre});
@@ -1433,6 +1501,10 @@ function posCard(p,c){
         h('div',{class:'x'},h('span'),confirmBtn('Eliminar','¿Seguro?',()=>commit(()=>{p.ops=p.ops.filter(x=>x.id!==o.id);recordSnapshot();}),'btn sm ghost')));
     }):h('p',{class:'empty'},'Aún no hay operaciones. Añade una compra para empezar.'));
   det.addEventListener('toggle',()=>{if(det.open) openPos.add(p.id); else openPos.delete(p.id);});
+  const gd=h('details',{open:openChart.has(p.id)},h('summary',null,'Gráfica de esta inversión'));
+  const fillG=()=>{if(gd.open&&!gd.querySelector('.pchart')) gd.append(posChart(p));};
+  gd.addEventListener('toggle',()=>{if(gd.open) openChart.add(p.id); else openChart.delete(p.id); fillG();});
+  if(gd.open) requestAnimationFrame(fillG);
   return h('article',{class:'card'},
     h('div',{class:'pc-head'},h('div',null,h('h3',null,p.nombre),h('span',{class:'tp'},h('i',{class:'sw',style:'background:var(--s'+tp.c+')'}),tp.n+(p.tk?' · '+p.tk:'')+(p.ej?' · ejemplo':''))),
       h('div',{class:'pc-val'},h('b',null,money(c.valor)),h('span',{class:tone(c.lat)},c.u>0?arrow(c.lat)+spc(c.latPct):'Sin posición'))),
@@ -1448,7 +1520,7 @@ function posCard(p,c){
       p.fuente&&canAuto(p)?h('button',{class:'btn sm',disabled:QS.busy,onclick:()=>traerHist(p)},'Traer histórico'):null,
       h('button',{class:'btn sm',onclick:()=>formHist(p)},'Importar histórico'),h('button',{class:'btn sm',onclick:()=>formPos(p)},'Editar')),
     QS.errs[p.id]?h('p',{class:'err',role:'status',style:'margin-top:8px'},QS.errs[p.id]):(QS.ok[p.id]?h('p',{class:'hint',style:'margin-top:8px'},QS.ok[p.id]):null),
-    p.hp&&p.hp.length?h('p',{class:'hint',style:'margin-top:8px'},'Histórico: '+p.hp.length+' precios desde el '+shortDate(p.hp[0][0])+'.'):null,det);
+    p.hp&&p.hp.length?h('p',{class:'hint',style:'margin-top:8px'},'Histórico: '+p.hp.length+' precios desde el '+shortDate(p.hp[0][0])+'.'):null,gd,det);
 }
 
 function quoteNote(){
