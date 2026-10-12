@@ -865,7 +865,7 @@ async function traerHist(p){
       else{
         let pts=hy.pts;
         if(hy.cur.code!=='EUR'||hy.cur.k!==1){const fx=hy.cur.code==='EUR'?null:await yhChart(hy.cur.code+'EUR=X','10y','1d'); if(fx&&fx.err) throw {code:'yh_fx',m:hy.cur.code}; pts=convHp(pts,fx&&fx.pts,hy.cur.k);}
-        o={pts:downsample(normHp(pts),1)};
+        const cut=addDaysISO(todayISO(),-365), all=normHp(pts); o={pts:downsample(all.filter(x=>x[0]<cut),1).concat(all.filter(x=>x[0]>=cut))};
       }
     }else if(p.fuente==='cripto'){
       o=parseAvSeries(await avCall('DIGITAL_CURRENCY_WEEKLY',{symbol:p.tk.trim().toUpperCase(),market:'EUR',return_full_data:true},{staleTime:3e5,refresh:true}));
@@ -881,7 +881,7 @@ async function traerHist(p){
       const pts=cutHp(o.pts,from);
       if(pts.length<2) QS.errs[p.id]='Devolvió muy pocos precios para ese símbolo.';
       else{n=pts.length; QS.ok[p.id]='Histórico traído: '+n+' precios desde el '+shortDate(pts[0][0])+'.';
-        commit(()=>{p.hp=downsample(mergeHp(p.hp,pts),900);recordSnapshot();});}
+        commit(()=>{p.hp=p.fuente==='yh'?mergeHp(p.hp,pts):downsample(mergeHp(p.hp,pts),900);recordSnapshot();});}
     }
   }catch(e){QS.errs[p.id]=p.fuente==='yh'?(e&&e.code==='yh_fx'?'Tengo el histórico en '+e.m+', pero no el cambio a euros.':yhErr(e)):errTxt(e,AV);}
   QS.busy=false; render();
@@ -911,12 +911,19 @@ async function buscar(q){
   })();
   await Promise.all([a,c]); return out;
 }
-function elegirInv(it){
-  DLG.close();
+async function elegirInv(it){
+  DLG.replaceChildren(h('div',{class:'form'},h('h2',null,it.nombre),h('p',{class:'hint',role:'status'},'Trayendo el precio actual y el histórico…')));
   const np={id:uid(),nombre:it.nombre,tipo:it.tipo,tk:it.tk,fuente:it.kind,mon:it.mon==='USD'?'USD':'EUR',cid:it.cid||'',pu:0,precio:0,fp:'',ej:false,ops:[],hp:[]};
   commit(()=>{S.pos.push(np);openPos.add(np.id);});
-  setTimeout(()=>formOp(np),80);
-  refreshPrices(true,[np]).then(()=>{ if(np.fuente==='yh'||np.fuente==='cripto'||np.mon==='EUR') traerHist(np); });
+  try{
+    for(let i=0;i<40&&QS.busy;i++) await sleep(300);
+    await refreshPrices(true,[np]);
+    if(np.precio>0&&(np.fuente==='yh'||np.fuente==='cripto'||np.mon==='EUR')){
+      for(let i=0;i<40&&QS.busy;i++) await sleep(300);
+      await traerHist(np);
+    }
+  }catch(e){}
+  DLG.close(); setTimeout(()=>formOp(np),80);
 }
 function formBuscar(){
   const inp=h('input',{type:'search',id:'f_q',placeholder:'Ej. Iberdrola, Vanguard S&P 500, BTC',autocomplete:'off',autocapitalize:'off'});
@@ -1092,7 +1099,7 @@ function openForm(cfg){
   const err=h('p',{class:'err',role:'alert',hidden:true}), hint=h('p',{class:'hint'});
   const api={
     get:n=>cfg.fields.find(f=>f.name===n).kind==='seg'?vals[n]:ctls[n].value,
-    show:(n,b)=>{wraps[n].hidden=!b;}, hint:t=>{hint.textContent=t||'';},
+    show:(n,b)=>{wraps[n].hidden=!b;}, set:(n,v)=>{ctls[n].value=v;}, hint:t=>{hint.textContent=t||'';},
     setOptions:(n,opts,sel)=>{ctls[n].replaceChildren(...opts.map(o=>h('option',{value:o.v},o.t))); if(sel!=null) ctls[n].value=sel;}};
   const changed=n=>{if(cfg.onChange) cfg.onChange(n,n==null?null:api.get(n),api);};
   cfg.fields.forEach(f=>{
@@ -1204,28 +1211,51 @@ function formPos(p){
     }});
 }
 function formOp(p){
-  const held=calcPos(p).u;
+  const held=calcPos(p).u; let userPrice=false, sugTxt='';
+  /* Precio sugerido: el actual si es de hoy; si es de otra fecha, el cierre más cercano de tu histórico. */
+  const sug=d=>{
+    if(!d||d>=todayISO()) return p.precio>0?{v:p.precio,txt:'Precio actual de '+p.nombre+'.'}:null;
+    const v=p.hp&&p.hp.length?priceAt(p.hp,d):null;
+    return v>0?{v,txt:'Precio de cierre cercano al '+shortDate(d)+', de tu histórico. Cámbialo si pagaste otro.'}:null;
+  };
+  const s0=sug(todayISO());
   openForm({
     title:'Nueva operación en '+p.nombre,
     fields:[
       {name:'tipo',label:'Tipo',kind:'seg',value:'compra',options:[{v:'compra',t:'Compra'},{v:'venta',t:'Venta'},{v:'dividendo',t:'Dividendo o intereses'}]},
       {name:'fecha',label:'Fecha',kind:'date',value:todayISO()},
-      {name:'uds',label:'Unidades',kind:'num',positive:true,placeholder:'0',pair:true},
-      {name:'precio',label:'Precio por unidad (€)',kind:'num',positive:true,placeholder:'0,00',pair:true},
-      {name:'com',label:'Comisión (€)',kind:'num',optional:true,placeholder:'0,00'},
+      {name:'uds',label:'Unidades',kind:'num',optional:true,placeholder:'0',pair:true},
+      {name:'precio',label:'Precio por unidad (€)',kind:'num',optional:true,value:s0?s0.v:null,placeholder:'0,00',pair:true},
+      {name:'tot',label:'O importe total (€)',kind:'num',optional:true,placeholder:'Si no sabes las unidades'},
+      {name:'com',label:'Comisión (€, opcional)',kind:'num',optional:true,placeholder:'0,00'},
       {name:'importe',label:'Importe cobrado, neto (€)',kind:'num',positive:true,placeholder:'0,00'}],
     onChange:(n,v,api)=>{
-      const t=api.get('tipo'), div=t==='dividendo'; ['uds','precio','com'].forEach(k=>api.show(k,!div)); api.show('importe',div);
+      const t=api.get('tipo'), div=t==='dividendo'; ['uds','precio','tot','com'].forEach(k=>api.show(k,!div)); api.show('importe',div);
       if(div){api.hint('');return;}
-      const u=parseNum(api.get('uds')),pr=parseNum(api.get('precio')),c=parseNum(api.get('com'))||0;
-      if(isFinite(u)&&isFinite(pr)) api.hint((t==='compra'?'Total a pagar: ':'Total a recibir: ')+money(u*pr+(t==='compra'?c:-c))+(t==='venta'?'  ·  Tienes '+F4.format(held)+' unidades':''));
-      else api.hint(t==='venta'?'Tienes '+F4.format(held)+' unidades.':'');
+      if(n==='precio') userPrice=true;
+      if(!userPrice&&(n===null||n==='fecha'||n==='tipo')){
+        const sg=sug(api.get('fecha'));
+        if(sg){ if(n!==null) api.set('precio',plain(sg.v)); sugTxt=sg.txt; } else { if(n!==null) api.set('precio',''); sugTxt='No tengo el precio de esa fecha: escríbelo.'; }
+      }else if(n==='fecha'&&userPrice) sugTxt='';
+      else if(n===null) sugTxt=s0?s0.txt:'';
+      const u=parseNum(api.get('uds')),pr=parseNum(api.get('precio')),tot=parseNum(api.get('tot')),c=parseNum(api.get('com'))||0;
+      const un=u>0?u:(tot>0&&pr>0?tot/pr:NaN), out=[sugTxt];
+      if(un>0&&pr>0) out.push((t==='compra'?'Pagas ':'Recibes ')+money(u>0?un*pr+(t==='compra'?c:-c):tot+(t==='compra'?c:-c))+' por '+F4.format(un)+' unidades.');
+      if(t==='venta') out.push('Tienes '+F4.format(held)+' unidades.');
+      api.hint(out.filter(Boolean).join(' '));
     },
     extra:h('button',{type:'button',class:'btn',onclick:()=>{DLG.close();setTimeout(()=>formBulk(p),60);}},'Pegar varias'),
     submit:'Añadir operación',
     onSubmit:v=>{
-      if(v.tipo==='venta'&&v.uds>held+1e-6) return 'Solo tienes '+F4.format(held)+' unidades para vender.';
-      commit(()=>{p.ops.push({id:uid(),fecha:v.fecha,tipo:v.tipo,uds:v.tipo==='dividendo'?0:v.uds,precio:v.tipo==='dividendo'?0:v.precio,com:v.tipo==='dividendo'?0:(v.com||0),importe:v.tipo==='dividendo'?v.importe:0});
+      let u=v.uds, pr=v.precio;
+      if(v.tipo!=='dividendo'){
+        if(!(pr>0)&&u>0&&v.tot>0) pr=v.tot/u;
+        if(!(u>0)&&v.tot>0&&pr>0) u=Math.round(v.tot/pr*1e6)/1e6;
+        if(!(u>0)) return 'Pon las unidades o el importe total.';
+        if(!(pr>0)) return 'No tengo el precio de esa fecha. Escribe el precio por unidad.';
+        if(v.tipo==='venta'&&u>held+1e-6) return 'Solo tienes '+F4.format(held)+' unidades para vender.';
+      }
+      commit(()=>{p.ops.push({id:uid(),fecha:v.fecha,tipo:v.tipo,uds:v.tipo==='dividendo'?0:u,precio:v.tipo==='dividendo'?0:pr,com:v.tipo==='dividendo'?0:(v.com||0),importe:v.tipo==='dividendo'?v.importe:0});
         p.ej=false; openPos.add(p.id); recordSnapshot();});
       toast('Operación añadida');
     }});
@@ -1556,8 +1586,15 @@ function viewDatos(){
   const tax=h('input',{type:'text',id:'tax',inputmode:'decimal',value:plain(S.aj.tax),style:'max-width:120px'});
   tax.addEventListener('change',()=>{const v=parseNum(tax.value); if(v>=0&&v<=60){S.aj.tax=v;touch();} tax.value=plain(S.aj.tax);});
   const px=h('input',{type:'url',id:'px',value:S.aj.proxy||'',placeholder:'https://…workers.dev',autocomplete:'off',spellcheck:'false'});
-  px.addEventListener('change',()=>{const v=px.value.trim().replace(/\/+$/,''); if(v&&!/^https:\/\/\S+$/.test(v)){toast('La dirección debe empezar por https://');px.value=S.aj.proxy||'';return;} S.aj.proxy=v; px.value=v; touch(); toast(v?'Dirección guardada':'Conexión quitada'); render();});
-  const probarProxy=async()=>{ if(!proxyUrl()) return toast('Escribe primero la dirección del Worker.'); toast('Probando…');
+  const saveProxy=()=>{
+    let v=px.value.trim().replace(/\/+$/,'');
+    if(v&&!/^https?:\/\//i.test(v)) v='https://'+v;
+    if(v&&!/^https:\/\/[^\s\/]+\.[^\s\/]+/.test(v)){toast('Esa dirección no parece válida. Debe ser como https://nombre.workers.dev');return false;}
+    if(v!==(S.aj.proxy||'')){S.aj.proxy=v; touch();}
+    px.value=v; return true;
+  };
+  px.addEventListener('change',()=>{if(saveProxy()) toast(S.aj.proxy?'Dirección guardada':'Conexión quitada');});
+  const probarProxy=async()=>{ if(!saveProxy()) return; if(!proxyUrl()) return toast('Escribe primero la dirección del Worker.'); toast('Probando…');
     try{const o=await yhChart('EURUSD=X','5d','1d'); toast(o.err?'El Worker responde, pero Yahoo no devolvió datos.':'Conexión correcta: 1 € = '+PRICE.format(o.price)+' $');}catch(e){toast(yhErr(e));} };
   const file=h('input',{type:'file',accept:'.json,application/json',id:'imp',hidden:true});
   file.addEventListener('change',()=>{
